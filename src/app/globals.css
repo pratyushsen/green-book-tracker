@@ -1,26 +1,156 @@
 @import "tailwindcss";
+@import "tw-animate-css";
 
+@custom-variant dark (&:is(.dark *));
+
+/* Light theme (optional — dark is the default) */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --radius: 0.65rem;
+  --background: #f6f7f6;
+  --foreground: #121614;
+  --card: #ffffff;
+  --card-foreground: #121614;
+  --popover: #ffffff;
+  --popover-foreground: #121614;
+  --primary: #3f7d5c;
+  --primary-foreground: #f4faf6;
+  --secondary: #eaeeeb;
+  --secondary-foreground: #1b221e;
+  --muted: #eceeed;
+  --muted-foreground: #66706b;
+  --accent: #e7ede9;
+  --accent-foreground: #121614;
+  --destructive: #c4413c;
+  --border: #dde2df;
+  --input: #d3d9d5;
+  --ring: #3f7d5c;
+  --sidebar: #eff2f0;
+  --chart-1: #1baf7a;
+  --chart-2: #2a78d6;
+  --chart-3: #eda100;
+  --chart-4: #e87ba4;
+  --chart-5: #6250d6;
+  --grid: #e3e7e5;
+}
+
+.dark {
+  --background: #0e1110;
+  --foreground: #e4e9e6;
+  --card: #141816;
+  --card-foreground: #e4e9e6;
+  --popover: #171c19;
+  --popover-foreground: #e4e9e6;
+  --primary: #7bb393;
+  --primary-foreground: #0b120e;
+  --secondary: #1d2320;
+  --secondary-foreground: #d5ddd8;
+  --muted: #1a1f1c;
+  --muted-foreground: #87918c;
+  --accent: #1d2622;
+  --accent-foreground: #e4e9e6;
+  --destructive: #c9534e;
+  --border: #232a26;
+  --input: #2b332f;
+  --ring: #7bb393;
+  --sidebar: #0b0e0d;
+  --chart-1: #199e70;
+  --chart-2: #3987e5;
+  --chart-3: #c98500;
+  --chart-4: #d55181;
+  --chart-5: #9085e9;
+  --grid: #1f2522;
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-sidebar: var(--sidebar);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html {
+    -webkit-font-smoothing: antialiased;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-feature-settings: "cv11", "ss01";
+  }
+  ::selection {
+    background: color-mix(in oklab, var(--primary) 35%, transparent);
+  }
+  /* thin scrollbars */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--input) transparent;
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+@layer utilities {
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+  .fade-up {
+    animation: fade-up 0.45s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+  }
+  .card-glow {
+    background-image: radial-gradient(120% 80% at 0% 0%, color-mix(in oklab, var(--primary) 9%, transparent) 0%, transparent 60%);
+  }
+}
+
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Recharts polish */
+.recharts-cartesian-grid line {
+  stroke: var(--grid);
+}
+.recharts-text {
+  fill: var(--muted-foreground);
+  font-size: 11px;
+}
+.recharts-tooltip-cursor {
+  fill: color-mix(in oklab, var(--foreground) 5%, transparent);
+}
+.recharts-surface:focus,
+.recharts-wrapper:focus,
+.recharts-sector:focus {
+  outline: none;
 }
