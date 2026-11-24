@@ -4,9 +4,8 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { toast } from "sonner";
 import type { Backend } from "./backend";
 import { emptySnapshot } from "./backend";
-import { createLocalBackend } from "./local-backend";
 import { createSupabaseBackend } from "./supabase-backend";
-import { DATA_MODE, type DataMode } from "@/lib/env";
+import { DATA_MODE, SUPABASE_CONFIG_ERROR, isSupabaseConfigured, type DataMode } from "@/lib/env";
 import { todayIn } from "@/lib/dates";
 import type {
   Activity,
@@ -38,7 +37,10 @@ interface StoreValue {
   status: "loading" | "ready" | "error" | "signed_out";
   error: string | null;
   mode: DataMode;
+  userId: string | null;
   userEmail: string | null;
+  /** number of writes currently in flight (drives the "Saving…" indicator) */
+  pending: number;
   profile: Profile;
   data: DataSnapshot;
   today: DateStr;
@@ -82,19 +84,29 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
   const [profile, setProfile] = useState<Profile>(PLACEHOLDER_PROFILE);
   const [data, setData] = useState<DataSnapshot>(emptySnapshot);
   const [userEmail, setUserEmail] = useState<string | null>(null);
+  const [userId, setUserId] = useState<string | null>(null);
+  const [pending, setPending] = useState(0);
+  const track = useCallback(async <R,>(fn: () => Promise<R>): Promise<R> => {
+    setPending((n) => n + 1);
+    try {
+      return await fn();
+    } finally {
+      setPending((n) => n - 1);
+    }
+  }, []);
   const [today, setToday] = useState<DateStr>(() => todayIn("UTC"));
 
   const load = useCallback(async () => {
     try {
-      if (!backendRef.current) {
-        backendRef.current = DATA_MODE === "supabase" ? await createSupabaseBackend() : createLocalBackend();
-      }
+      if (!isSupabaseConfigured) throw new Error(SUPABASE_CONFIG_ERROR);
+      if (!backendRef.current) backendRef.current = await createSupabaseBackend();
       const backend = backendRef.current;
       if (!backend) {
         setStatus("signed_out");
         return;
       }
       setUserEmail(backend.userEmail);
+      setUserId(backend.userId);
       const res = await backend.loadAll();
       setProfile(res.profile);
       setData(res.data);
@@ -125,18 +137,18 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
 
   const create = useCallback(async <T extends TableName>(table: T, rows: NewRow<T>[]) => {
     try {
-      const created = await backend().insert(table, rows);
+      const created = await track(() => backend().insert(table, rows));
       setData((d) => ({ ...d, [table]: [...d[table], ...created] }));
       return created;
     } catch (e) {
       report(e);
       return [];
     }
-  }, []);
+  }, [track]);
 
   const update = useCallback(async <T extends TableName>(table: T, id: string, patch: Partial<TableMap[T]>) => {
     try {
-      const row = await backend().update(table, id, patch);
+      const row = await track(() => backend().update(table, id, patch));
       setData((d) => ({
         ...d,
         [table]: (d[table] as TableMap[T][]).map((r) => (r.id === id ? row : r)),
@@ -146,30 +158,32 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       report(e);
       return null;
     }
-  }, []);
+  }, [track]);
 
   const remove = useCallback(
     async (table: TableName, ids: string[]) => {
       try {
-        await backend().remove(table, ids);
-        // Deletions can cascade (e.g. chapter -> topics), so resync everything.
-        const res = await backend().loadAll();
-        setData(res.data);
+        await track(async () => {
+          await backend().remove(table, ids);
+          // Deletions can cascade (e.g. chapter -> topics), so resync everything.
+          const res = await backend().loadAll();
+          setData(res.data);
+        });
       } catch (e) {
         report(e);
       }
     },
-    [],
+    [track],
   );
 
   const updateProfile = useCallback(async (patch: Partial<Profile>) => {
     try {
-      const p = await backend().updateProfile(patch);
+      const p = await track(() => backend().updateProfile(patch));
       setProfile(p);
     } catch (e) {
       report(e);
     }
-  }, []);
+  }, [track]);
 
   const value = useMemo<StoreValue>(() => {
     const setTopicStatus: StoreValue["setTopicStatus"] = async (topic, next) => {
@@ -194,6 +208,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
         difficulties: input.difficulties || null,
         tomorrow_focus: input.tomorrow_focus || null,
       };
+      setPending((n) => n + 1);
       try {
         const b = backend();
         const existing = data.check_ins.find((c) => c.date === input.date);
@@ -249,7 +264,15 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
         return checkIn;
       } catch (e) {
         report(e);
+        // Partial writes may have happened; resync so the UI matches the database.
+        try {
+          setData((await backend().loadAll()).data);
+        } catch {
+          /* keep current view */
+        }
         return null;
+      } finally {
+        setPending((n) => n - 1);
       }
     };
 
@@ -276,7 +299,9 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       status,
       error,
       mode: DATA_MODE,
+      userId,
       userEmail,
+      pending,
       profile,
       data,
       today,
@@ -290,11 +315,16 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       logRevision,
       rescheduleTask,
       signOut: async () => {
-        await backendRef.current?.signOut();
+        try {
+          await backendRef.current?.signOut();
+          toast.success("Signed out");
+        } catch (e) {
+          report(e);
+        }
         window.location.href = "/login";
       },
     };
-  }, [status, error, userEmail, profile, data, today, load, create, update, remove, updateProfile]);
+  }, [status, error, userId, userEmail, pending, profile, data, today, load, create, update, remove, updateProfile]);
 
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>;
 }

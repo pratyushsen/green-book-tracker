@@ -10,8 +10,9 @@ import {
   BookOpen,
   CalendarCheck2,
   CalendarRange,
+  Check,
   Database,
-  HardDrive,
+  Loader2,
   LayoutDashboard,
   LogOut,
   Menu,
@@ -38,6 +39,7 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ReminderEngine } from "./reminder-engine";
+import { LegacyImportBanner } from "@/components/import-local-data";
 import { currentAlerts } from "@/lib/reminders";
 import { clockIn, fmt } from "@/lib/dates";
 import { bookProgress, streaks } from "@/lib/metrics";
@@ -162,24 +164,37 @@ function AlertsBell() {
 }
 
 function ModeBadge() {
-  const { mode } = useStore();
-  const local = mode === "local";
+  const { pending, status } = useStore();
+  const [justSaved, setJustSaved] = useState(false);
+  const [wasPending, setWasPending] = useState(false);
+  useEffect(() => {
+    if (pending > 0) setWasPending(true);
+    else if (wasPending) {
+      setWasPending(false);
+      setJustSaved(true);
+      const id = window.setTimeout(() => setJustSaved(false), 1500);
+      return () => window.clearTimeout(id);
+    }
+  }, [pending, wasPending]);
+  const saving = pending > 0;
+  const offline = status === "error";
   return (
     <Tooltip>
       <TooltipTrigger asChild>
         <span
+          aria-live="polite"
           className={cn(
             "hidden items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] sm:inline-flex",
-            local ? "border-amber-500/30 bg-amber-500/10 text-amber-300" : "border-primary/30 bg-primary/10 text-primary",
+            offline ? "border-red-500/30 bg-red-500/10 text-red-300" : "border-primary/30 bg-primary/10 text-primary",
           )}
         >
-          {local ? <HardDrive className="size-3" /> : <Database className="size-3" />}
-          {local ? "Local mode" : "Synced to Supabase"}
+          {saving ? <Loader2 className="size-3 animate-spin" /> : justSaved ? <Check className="size-3" /> : <Database className="size-3" />}
+          {offline ? "Not connected" : saving ? "Saving…" : justSaved ? "Saved" : "Synced to Supabase"}
         </span>
       </TooltipTrigger>
       <TooltipContent className="max-w-64">
-        {local
-          ? "Supabase is not configured. Data is stored only in this browser's localStorage — it is not backed up or synced."
+        {offline
+          ? "Couldn't load your data from Supabase. See the message on the page."
           : "Data is stored in your Supabase database and protected by Row Level Security."}
       </TooltipContent>
     </Tooltip>
@@ -187,9 +202,9 @@ function ModeBadge() {
 }
 
 function UserMenu() {
-  const { mode, userEmail, profile, signOut } = useStore();
+  const { userEmail, profile, signOut } = useStore();
   const { theme, setTheme } = useTheme();
-  const name = profile.display_name || userEmail || "Local user";
+  const name = profile.display_name || userEmail || "Account";
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -211,14 +226,10 @@ function UserMenu() {
             <Settings /> Settings
           </Link>
         </DropdownMenuItem>
-        {mode === "supabase" && (
-          <>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={() => void signOut()}>
-              <LogOut /> Sign out
-            </DropdownMenuItem>
-          </>
-        )}
+        <DropdownMenuSeparator />
+        <DropdownMenuItem onClick={() => void signOut()}>
+          <LogOut /> Sign out
+        </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
   );
@@ -239,7 +250,7 @@ function LoadingState() {
 }
 
 export function AppShell({ children }: { children: React.ReactNode }) {
-  const { status, error, reload, today, mode } = useStore();
+  const { status, error, reload, today } = useStore();
   const [mobileOpen, setMobileOpen] = useState(false);
 
   if (status === "signed_out") {
@@ -273,11 +284,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </div>
         </header>
 
-        {mode === "local" && status === "ready" && (
-          <div className="border-b border-amber-500/20 bg-amber-500/5 px-4 py-1.5 text-center text-[11px] text-amber-300/90 sm:px-6">
-            Local development mode — data is saved only in this browser, not in Supabase. Configure Supabase to persist and sync it.
-          </div>
-        )}
+        {status === "ready" && <LegacyImportBanner />}
 
         <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-6 sm:px-6 lg:py-8">
           {status === "loading" && <LoadingState />}
@@ -288,7 +295,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               </div>
               <p className="mt-2 text-muted-foreground">{error}</p>
               <p className="mt-2 text-xs text-muted-foreground">
-                If you just configured Supabase, make sure the migration in <code>supabase/migrations</code> has been run.
+                If you just configured Supabase, make sure all three SQL files in <code>supabase/migrations</code> have been run, in order
+                (README → Supabase setup) and restart the dev server after editing <code>.env.local</code>.
               </p>
               <Button className="mt-4" size="sm" variant="outline" onClick={() => void reload()}>
                 <RefreshCw /> Retry

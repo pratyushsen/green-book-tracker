@@ -3,12 +3,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { useTheme } from "next-themes";
 import {
+  Activity,
   BellRing,
   CheckCircle2,
   CircleSlash,
   Database,
   Download,
-  HardDrive,
+  Loader2,
   LogOut,
   MonitorSmartphone,
   Moon,
@@ -31,14 +32,19 @@ import {
   showBrowserNotification,
   type PermissionState,
 } from "@/lib/notifications";
-import { clearLocalData, restoreLocalSnapshot } from "@/lib/data/local-backend";
+import { fingerprintSnapshot } from "@/lib/data/local-backend";
+import { planImport, runImport, verifyImport } from "@/lib/data/local-import";
+import { runDatabaseSelfTest, type TestStep } from "@/lib/data/self-test";
+import { emptySnapshot } from "@/lib/data/backend";
+import { getSupabaseBrowserClient } from "@/lib/supabase/client";
+import { LegacyImportPanel } from "@/components/import-local-data";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { ConfirmDialog, EnumSelect, Field, PageHeader, intOr } from "@/components/shared";
+import { EnumSelect, Field, PageHeader, intOr } from "@/components/shared";
 
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
@@ -348,9 +354,11 @@ function RemindersCard() {
 }
 
 function DataCard() {
-  const { data, profile, mode, userEmail, signOut, reload } = useStore();
-  const [confirmClear, setConfirmClear] = useState(false);
+  const { data, profile, userEmail, signOut, reload } = useStore();
   const counts = TABLES.map((t) => [t, data[t].length] as const).filter(([, n]) => n > 0);
+  const [restoring, setRestoring] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [results, setResults] = useState<TestStep[] | null>(null);
 
   function exportJson() {
     const blob = new Blob([JSON.stringify({ app: "green-book-tracker", version: 1, exported_at: new Date().toISOString(), profile, data }, null, 2)], {
@@ -362,17 +370,53 @@ function DataCard() {
     a.download = `green-book-tracker-backup-${fmt(new Date().toISOString().slice(0, 10), "yyyy-MM-dd")}.json`;
     a.click();
     URL.revokeObjectURL(url);
+    toast.success("Backup downloaded");
   }
 
+  /** Restores a JSON backup by importing it into Supabase (atomic; never duplicates rows already in your account). */
   async function restore(file: File) {
+    setRestoring(true);
     try {
       const json = JSON.parse(await file.text());
       if (json.app !== "green-book-tracker" || !json.data) throw new Error("Not a Green Book Tracker backup");
-      restoreLocalSnapshot(json.profile ?? null, json.data);
+      const source = { profile: (json.profile ?? null) as Profile | null, data: json.data };
+      const plan = planImport(source, data, false);
+      if (plan.total === 0) {
+        toast.success("Everything in this backup is already in your account.");
+        return;
+      }
+      const sb = getSupabaseBrowserClient();
+      const fp = await fingerprintSnapshot({ profile: source.profile, data: { ...emptySnapshot(), ...json.data } });
+      const res = await runImport(sb, plan, fp, "backup_file", false);
+      if (res.alreadyImported) {
+        toast.success("This backup was already restored — nothing was duplicated.");
+        return;
+      }
+      const v = await verifyImport(sb, plan);
       await reload();
-      toast.success("Backup restored");
+      if (!v.ok) throw new Error(`Restore could not be verified: ${v.problems.join("; ")}`);
+      toast.success(`Restored ${plan.total} records${plan.skipped.length ? ` (skipped ${plan.skipped.join(", ")})` : ""}`);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Could not read backup");
+    } finally {
+      setRestoring(false);
+    }
+  }
+
+  async function selfTest() {
+    setTesting(true);
+    setResults(null);
+    try {
+      const steps = await runDatabaseSelfTest(getSupabaseBrowserClient());
+      setResults(steps);
+      const failed = steps.filter((s) => !s.ok).length;
+      if (failed) toast.error(`Database test: ${failed} of ${steps.length} checks failed`);
+      else toast.success(`Database test passed (${steps.length} checks)`);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    } finally {
+      setTesting(false);
+      await reload();
     }
   }
 
@@ -383,22 +427,16 @@ function DataCard() {
         <CardDescription>Where your study data lives and how to back it up.</CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
-        <div
-          className={cn(
-            "flex items-start gap-3 rounded-lg border p-3 text-sm",
-            mode === "local" ? "border-amber-500/30 bg-amber-500/5" : "border-primary/30 bg-primary/5",
-          )}
-        >
-          {mode === "local" ? <HardDrive className="mt-0.5 size-4 text-amber-300" /> : <Database className="mt-0.5 size-4 text-primary" />}
+        <div className="flex items-start gap-3 rounded-lg border border-primary/30 bg-primary/5 p-3 text-sm">
+          <Database className="mt-0.5 size-4 text-primary" />
           <div>
-            <div className="font-medium">{mode === "local" ? "Local development mode" : `Supabase · ${userEmail ?? ""}`}</div>
+            <div className="font-medium">Supabase · {userEmail ?? ""}</div>
             <p className="text-xs text-muted-foreground">
-              {mode === "local"
-                ? "Data is stored only in this browser's localStorage. It is not sent anywhere, not synced across devices, and is lost if you clear site data. Configure Supabase (see README) for real persistence."
-                : "Your data is stored in Supabase Postgres. Row Level Security ensures only your signed-in account can read or write it."}
+              Your data is stored in Supabase Postgres. Row Level Security ensures only your signed-in account can read or write it.
             </p>
           </div>
         </div>
+        <LegacyImportPanel />
         {counts.length > 0 && (
           <div className="flex flex-wrap gap-1.5">
             {counts.map(([t, n]) => (
@@ -412,35 +450,46 @@ function DataCard() {
           <Button variant="outline" size="sm" onClick={exportJson}>
             <Download /> Export JSON backup
           </Button>
-          {mode === "local" && (
-            <>
-              <label className="inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-md border border-border px-3 text-xs font-medium hover:bg-accent">
-                <Upload className="size-4" /> Restore backup
-                <input type="file" accept="application/json,.json" className="hidden" onChange={(e) => e.target.files?.[0] && void restore(e.target.files[0])} />
-              </label>
-              <Button variant="ghost" size="sm" className="text-red-400 hover:text-red-300" onClick={() => setConfirmClear(true)}>
-                Clear local data
-              </Button>
-            </>
-          )}
-          {mode === "supabase" && (
-            <Button variant="outline" size="sm" onClick={() => void signOut()}>
-              <LogOut /> Sign out
-            </Button>
-          )}
+          <label
+            className={cn(
+              "inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-md border border-border px-3 text-xs font-medium hover:bg-accent",
+              restoring && "pointer-events-none opacity-60",
+            )}
+          >
+            {restoring ? <Loader2 className="size-4 animate-spin" /> : <Upload className="size-4" />} Restore backup
+            <input
+              type="file"
+              accept="application/json,.json"
+              className="hidden"
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                e.target.value = "";
+                if (f) void restore(f);
+              }}
+            />
+          </label>
+          <Button variant="outline" size="sm" onClick={() => void selfTest()} disabled={testing}>
+            {testing ? <Loader2 className="animate-spin" /> : <Activity />} Test database connection
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => void signOut()}>
+            <LogOut /> Sign out
+          </Button>
         </div>
+        {results && (
+          <ul className="space-y-1 rounded-lg border border-border/60 p-3 text-xs" data-testid="db-self-test">
+            {results.map((s) => (
+              <li key={s.name} className="flex items-start gap-2">
+                {s.ok ? <CheckCircle2 className="mt-0.5 size-3.5 shrink-0 text-primary" /> : <XCircle className="mt-0.5 size-3.5 shrink-0 text-red-400" />}
+                <span className="flex-1">
+                  {s.name}
+                  {s.detail && <span className={cn("ml-1", s.ok ? "text-muted-foreground" : "text-red-300")}>— {s.detail}</span>}
+                </span>
+                <span className="tabular text-muted-foreground">{s.ms} ms</span>
+              </li>
+            ))}
+          </ul>
+        )}
       </CardContent>
-      <ConfirmDialog
-        open={confirmClear}
-        onOpenChange={setConfirmClear}
-        title="Clear all local data?"
-        description="This permanently erases everything stored in this browser. Export a backup first if you want to keep it."
-        confirmLabel="Clear data"
-        onConfirm={async () => {
-          clearLocalData();
-          await reload();
-        }}
-      />
     </Card>
   );
 }
